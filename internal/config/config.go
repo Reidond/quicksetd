@@ -218,8 +218,11 @@ func expandTilde(path string) string {
 	if path == "~" {
 		return home
 	}
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		return filepath.Join(home, rest)
 	}
-	return filepath.Join(home, strings.TrimPrefix(path, "~"))
+	if rest, ok := strings.CutPrefix(path, "~"); ok {
+		return filepath.Join(home, rest)
+	}
+	return path
 }

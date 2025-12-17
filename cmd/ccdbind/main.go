@@ -35,16 +35,26 @@ type pidRecord struct {
 }
 
 func main() {
-	var (
-		flagConfig    = flag.String("config", "", "config file path (TOML). Default: XDG config path")
-		flagInterval  = flag.Duration("interval", 0, "poll interval override (e.g. 1s, 500ms)")
-		flagPrintTopo = flag.Bool("print-topology", false, "print detected CPU topology and exit")
-		flagDryRun    = flag.Bool("dry-run", false, "log actions without mutating systemd state")
-		flagDumpState = flag.Bool("dump-state", false, "print persisted state JSON and exit")
-	)
-	flag.Parse()
-
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	if len(os.Args) > 1 && os.Args[1] == "status" {
+		runStatus(os.Args[2:])
+		return
+	}
+
+	runDaemon(os.Args[1:])
+}
+
+func runDaemon(args []string) {
+	fs := flag.NewFlagSet("ccdbind", flag.ExitOnError)
+	var (
+		flagConfig    = fs.String("config", "", "config file path (TOML). Default: XDG config path")
+		flagInterval  = fs.Duration("interval", 0, "poll interval override (e.g. 1s, 500ms)")
+		flagPrintTopo = fs.Bool("print-topology", false, "print detected CPU topology and exit")
+		flagDryRun    = fs.Bool("dry-run", false, "log actions without mutating systemd state")
+		flagDumpState = fs.Bool("dump-state", false, "print persisted state JSON and exit")
+	)
+	_ = fs.Parse(args)
 
 	defaultCfgPath, err := config.DefaultConfigPath()
 	if err != nil {

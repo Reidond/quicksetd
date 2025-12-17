@@ -5,6 +5,7 @@ zig-out/
 # Go
 /bin/
 /ccdbind
+/ccdpin
 *.test
 *.out
 go.work

@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -28,6 +30,9 @@ const (
 	envOSSlices = "STEAM_CCD_OS_SLICES"
 	envDebug    = "STEAM_CCD_DEBUG"
 )
+
+// logFile is the global log file handle for crash logging.
+var logFile *os.File
 
 type options struct {
 	print bool
@@ -50,6 +55,11 @@ type resolved struct {
 }
 
 func main() {
+	// Set up crash logging before anything else
+	setupLogging()
+	defer closeLogging()
+	defer recoverPanic()
+
 	opts, cmd, err := parseArgs(os.Args[1:], os.Stdout, os.Stderr)
 	if err != nil {
 		fatal(err)
@@ -349,20 +359,98 @@ func hasBinary(name string) bool {
 	return err == nil
 }
 
+// logDir returns the directory for ccdpin log files.
+func logDir() (string, error) {
+	// Use XDG state dir if available, otherwise fall back to cache
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		return filepath.Join(dir, "ccdpin"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state", "ccdpin"), nil
+}
+
+// setupLogging initializes crash logging to a file.
+func setupLogging() {
+	dir, err := logDir()
+	if err != nil {
+		return // silently skip if we can't determine log dir
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+
+	logPath := filepath.Join(dir, "ccdpin.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	logFile = f
+
+	// Configure log package to write to file
+	log.SetOutput(f)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("ccdpin started, pid=%d, args=%v", os.Getpid(), os.Args)
+}
+
+// closeLogging closes the log file handle.
+func closeLogging() {
+	if logFile != nil {
+		log.Printf("ccdpin exiting normally")
+		logFile.Close()
+	}
+}
+
+// recoverPanic captures panic information and writes it to the log file.
+func recoverPanic() {
+	if r := recover(); r != nil {
+		stack := debug.Stack()
+		msg := fmt.Sprintf("PANIC: %v\n%s", r, stack)
+
+		// Write to log file if available
+		if logFile != nil {
+			log.Printf("%s", msg)
+			logFile.Sync()
+		}
+
+		// Also write to stderr
+		fmt.Fprintf(os.Stderr, "ccdpin: %s\n", msg)
+		os.Exit(2)
+	}
+}
+
+// logError writes an error to the log file (if available) and stderr.
+func logError(err error) {
+	if logFile != nil {
+		log.Printf("ERROR: %v", err)
+	}
+}
+
 func fatal(err error) {
+	logError(err)
 	fmt.Fprintln(os.Stderr, "ccdpin:", err)
 	os.Exit(2)
 }
 
 func warnf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "ccdpin: "+format+"\n", args...)
+	msg := fmt.Sprintf(format, args...)
+	if logFile != nil {
+		log.Printf("WARN: %s", msg)
+	}
+	fmt.Fprintf(os.Stderr, "ccdpin: %s\n", msg)
 }
 
 func debugf(debug bool, format string, args ...any) {
 	if !debug {
 		return
 	}
-	warnf(format, args...)
+	msg := fmt.Sprintf(format, args...)
+	if logFile != nil {
+		log.Printf("DEBUG: %s", msg)
+	}
+	fmt.Fprintf(os.Stderr, "ccdpin: %s\n", msg)
 }
 
 type pinState struct {
@@ -541,7 +629,7 @@ func pruneDeadInstances(st pinState) pinState {
 	return st
 }
 
-func (m *slicePinManager) pinSlicesLocked(ctx context.Context, st *pinState) error {
+func (m *slicePinManager) pinSlicesLocked(_ context.Context, st *pinState) error {
 	// Mimic script behavior: skip slices that don't exist.
 	pinned := make([]string, 0, len(m.slices))
 	current := map[string]string{}
@@ -588,7 +676,7 @@ func (m *slicePinManager) pinSlicesLocked(ctx context.Context, st *pinState) err
 	return nil
 }
 
-func (m *slicePinManager) releaseAndRestore(ctx context.Context) {
+func (m *slicePinManager) releaseAndRestore(_ context.Context) {
 	unlock, st, err := m.lockAndLoad()
 	if err != nil {
 		warnf("release lock: %v", err)

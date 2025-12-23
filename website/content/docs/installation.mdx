@@ -1,0 +1,187 @@
+---
+title: Installation
+description: Install ccdbind and ccdpin on your Linux system
+---
+
+# Installation
+
+## Prerequisites
+
+- **Linux** with systemd user session support
+- **Go 1.21+** (for building from source)
+- **AMD multi-CCD CPU** (or Intel/other with manual CPU group config)
+
+<Callout type="info">
+  The tools work best on AMD Ryzen 9 / Threadripper CPUs with multiple CCDs, but can be configured manually for any CPU topology.
+</Callout>
+
+## Automated Installation
+
+The easiest way to install is using the provided install script:
+
+<Steps>
+### Clone the repository
+
+```bash
+git clone https://github.com/youruser/quicksetd
+cd quicksetd
+```
+
+### Run the installer
+
+```bash
+./install.sh
+```
+
+This will:
+- Build the binaries
+- Install to `~/.local/bin/`
+- Set up systemd user units
+- Create default configuration
+
+### Verify installation
+
+```bash
+ccdbind status
+systemctl --user status ccdbind.service
+```
+</Steps>
+
+## Manual Installation
+
+If you prefer manual control:
+
+<Steps>
+### Build
+
+```bash
+go test ./...
+go build ./cmd/ccdbind
+go build ./cmd/ccdpin
+```
+
+### Install binaries
+
+```bash
+install -Dm755 ./ccdbind ~/.local/bin/ccdbind
+install -Dm755 ./ccdpin ~/.local/bin/ccdpin
+```
+
+### Install systemd units
+
+```bash
+install -Dm644 systemd/user/ccdbind.service ~/.config/systemd/user/ccdbind.service
+install -Dm644 systemd/user/game.slice ~/.config/systemd/user/game.slice
+```
+
+### Install configuration
+
+```bash
+install -Dm644 ./config.example.toml ~/.config/ccdbind/config.toml
+```
+
+### Enable the service
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now ccdbind.service
+```
+</Steps>
+
+## Install Script Options
+
+The installer supports several options:
+
+```bash
+./install.sh [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-h, --help` | Show help message |
+| `-n, --dry-run` | Print actions without executing |
+| `-s, --skip-build` | Skip building (use existing binaries) |
+| `-S, --skip-service` | Skip systemd service setup |
+| `--prefix=PATH` | Install prefix (default: `~/.local`) |
+| `--bindir=PATH` | Binary directory (default: `PREFIX/bin`) |
+| `--configdir=PATH` | Config directory (default: `~/.config/ccdbind`) |
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `PREFIX` | Install prefix |
+| `BINDIR` | Binary directory |
+| `CONFIGDIR` | Config directory |
+| `GO` | Go compiler (default: `go`) |
+| `GOFLAGS` | Additional flags for `go build` |
+
+## Uninstallation
+
+To remove ccdbind and ccdpin:
+
+```bash
+./uninstall.sh
+```
+
+Or manually:
+
+```bash
+systemctl --user disable --now ccdbind.service
+rm ~/.local/bin/ccdbind ~/.local/bin/ccdpin
+rm ~/.config/systemd/user/ccdbind.service
+rm ~/.config/systemd/user/game.slice
+rm -rf ~/.config/ccdbind
+rm -rf ~/.local/state/ccdbind
+rm -rf ~/.local/state/ccdpin
+systemctl --user daemon-reload
+```
+
+## Verifying Your Setup
+
+After installation, verify everything is working:
+
+### Check CPU topology detection
+
+```bash
+ccdbind --print-topology
+```
+
+Expected output (example for Ryzen 9 5900X):
+```
+OS_CPUS:   0-5,12-17
+GAME_CPUS: 6-11,18-23
+```
+
+### Check service status
+
+```bash
+ccdbind status
+```
+
+### Check systemd service
+
+```bash
+systemctl --user status ccdbind.service
+journalctl --user -u ccdbind.service -f
+```
+
+## Troubleshooting Installation
+
+<Callout type="warning">
+  If `ccdbind --print-topology` shows all CPUs in one group, your CPU may not have multiple CCDs, or the L3 cache topology isn't exposed in sysfs. See [Configuration](/docs/configuration) for manual CPU group setup.
+</Callout>
+
+### Common issues
+
+**"command not found" after install**
+- Ensure `~/.local/bin` is in your `PATH`
+- Add to `~/.bashrc`: `export PATH="$HOME/.local/bin:$PATH"`
+
+**Service fails to start**
+- Check logs: `journalctl --user -u ccdbind.service`
+- Verify config: `ccdbind --config ~/.config/ccdbind/config.toml --dry-run`
+
+**Permission denied errors**
+- Ensure you're running as a regular user (not root)
+- systemd user session must be running

@@ -1,0 +1,90 @@
+---
+title: Introduction
+description: CPU affinity management for Linux gaming on AMD multi-CCD processors
+---
+
+# ccdbind + ccdpin
+
+CPU affinity management tools for Linux gaming, designed for AMD processors with multiple Core Complex Dies (CCDs).
+
+<Callout type="info">
+  These tools automatically detect your CPU topology and optimize game performance by isolating game workloads from OS tasks.
+</Callout>
+
+## The Problem
+
+On AMD CPUs with multiple CCDs (like Ryzen 9 or Threadripper), processes can migrate between CCDs during execution. Each CCD has its own L3 cache, so cross-CCD migration causes cache misses and performance degradation.
+
+Games are particularly sensitive to this because:
+- They have tight frame timing requirements
+- Background OS tasks compete for the same cores
+- Cache thrashing from core migration causes stuttering
+
+## The Solution
+
+**ccdbind** and **ccdpin** solve this by:
+
+1. **Detecting CCD groups** via L3 cache topology from sysfs
+2. **Pinning OS slices** (`app.slice`, `background.slice`) to one CCD group
+3. **Dedicating game processes** to a separate CCD group with exclusive L3 cache access
+
+## Two Tools, Two Approaches
+
+<Cards>
+  <Card
+    title="ccdbind (Daemon)"
+    href="/docs/ccdbind"
+    description="Background service that automatically detects games and manages CPU pinning"
+  />
+  <Card
+    title="ccdpin (Wrapper)"
+    href="/docs/ccdpin"
+    description="Launch wrapper for Steam games with manual control over CPU affinity"
+  />
+</Cards>
+
+### When to Use Which?
+
+| Use Case | Recommended |
+|----------|-------------|
+| "Set and forget" automatic management | `ccdbind` |
+| Per-game control via Steam launch options | `ccdpin` |
+| Both automatic + manual overrides | Both together |
+
+## Quick Start
+
+<Steps>
+### Install
+
+```bash
+git clone https://github.com/youruser/quicksetd
+cd quicksetd
+./install.sh
+```
+
+### Verify
+
+```bash
+ccdbind status
+```
+
+### (Optional) Use with Steam
+
+Add to your game's launch options:
+```
+ccdpin %command%
+```
+</Steps>
+
+## Requirements
+
+- Linux with systemd (user session)
+- AMD CPU with multiple CCDs (or manual CPU group configuration)
+- Go 1.21+ (for building from source)
+
+## Next Steps
+
+<Cards>
+  <Card title="Installation" href="/docs/installation" description="Detailed installation instructions" />
+  <Card title="Configuration" href="/docs/configuration" description="Configure detection rules and CPU groups" />
+</Cards>

@@ -1,0 +1,262 @@
+---
+title: ccdbind
+description: Background daemon for automatic CPU affinity management
+---
+
+# ccdbind
+
+`ccdbind` is a systemd user daemon that automatically detects game processes and manages CPU affinity.
+
+## How It Works
+
+<Steps>
+### Topology Detection
+
+On startup, ccdbind reads `/sys/devices/system/cpu/cpu*/cache/index3/shared_cpu_list` to discover L3 cache groups (CCDs).
+
+### Process Scanning
+
+Every 2 seconds (configurable), it scans `/proc` for processes with Steam/Proton environment variables.
+
+### Pinning
+
+When a game is detected:
+1. Pin `app.slice` and `background.slice` to OS CPUs
+2. Create a transient scope under `game.slice`
+3. Move game PIDs to the scope
+4. Pin the scope to GAME CPUs
+
+### Restoration
+
+When no games are running, restore original CPU settings.
+</Steps>
+
+## Usage
+
+### Start the daemon
+
+```bash
+systemctl --user start ccdbind.service
+```
+
+### Enable at login
+
+```bash
+systemctl --user enable ccdbind.service
+```
+
+### Check status
+
+```bash
+ccdbind status
+```
+
+### View logs
+
+```bash
+journalctl --user -u ccdbind.service -f
+```
+
+## CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Config file path |
+| `--interval <dur>` | Poll interval (e.g., `1s`, `500ms`) |
+| `--print-topology` | Print detected CPU groups and exit |
+| `--dry-run` | Log actions without executing |
+| `--dump-state` | Print persisted state JSON and exit |
+
+### Examples
+
+```bash
+# Print detected topology
+ccdbind --print-topology
+
+# Test configuration without making changes
+ccdbind --dry-run
+
+# Use custom config
+ccdbind --config /path/to/config.toml
+
+# Override poll interval
+ccdbind --interval 500ms
+```
+
+## Status Command
+
+The `status` subcommand shows current state:
+
+```bash
+ccdbind status
+```
+
+Output:
+```
+Topology:
+  OS CPUs:   0-5,12-17
+  Game CPUs: 6-11,18-23
+
+Status: GAME ACTIVE
+
+Pinned Slices:
+  app.slice        → 0-5,12-17
+  background.slice → 0-5,12-17
+
+Active Games:
+  game-765432.scope (Cyberpunk2077.exe)
+    PIDs: 12345, 12346, 12347
+    CPUs: 6-11,18-23
+```
+
+### Status Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+| `--filter=all` | Show all info including inactive |
+
+```bash
+# JSON output for scripting
+ccdbind status --json
+
+# Show everything
+ccdbind status --filter=all
+```
+
+## Systemd Integration
+
+### Service Unit
+
+The service unit (`~/.config/systemd/user/ccdbind.service`):
+
+```ini
+[Unit]
+Description=CCD CPU Binding Daemon
+Documentation=https://github.com/youruser/quicksetd
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ccdbind
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+### Game Slice
+
+Games are placed in `game.slice` (`~/.config/systemd/user/game.slice`):
+
+```ini
+[Unit]
+Description=Slice for game processes
+Before=slices.target
+
+[Slice]
+```
+
+### D-Bus API
+
+ccdbind uses the systemd user manager D-Bus API:
+
+- `StartTransientUnit` - Create game scopes
+- `AttachProcessesToUnit` - Move processes to scopes
+- `SetUnitProperties` - Set `AllowedCPUs` on slices/scopes
+
+<Callout type="info">
+  ccdbind operates entirely in user space. No root access required.
+</Callout>
+
+## Game Detection
+
+### Primary: Environment Variables
+
+ccdbind scans `/proc/<pid>/environ` for Steam-related variables:
+
+- `SteamAppId`
+- `SteamGameId`
+- `STEAM_COMPAT_APP_ID`
+
+These are automatically set by Steam for all games.
+
+### Secondary: Executable Allowlist
+
+For non-Steam games, add executables to `exe_allowlist`:
+
+```toml
+exe_allowlist = ["lutris-wrapper", "heroic-game"]
+```
+
+### Ignored Processes
+
+Some processes have Steam variables but aren't games:
+
+```toml
+ignore_exe = [
+  "steam",
+  "steamwebhelper",
+  "pressure-vessel",
+  "reaper",
+]
+```
+
+## State Management
+
+ccdbind persists state to handle crashes and restarts:
+
+```json title="~/.local/state/ccdbind/state.json"
+{
+  "os_pinned": true,
+  "original_cpus": {
+    "app.slice": "0-23",
+    "background.slice": "0-23"
+  },
+  "game_scopes": ["game-765432.scope"]
+}
+```
+
+On startup:
+- If state shows games were active, verify and clean up stale scopes
+- Restore original CPU settings if no games are running
+
+## Troubleshooting
+
+### Daemon won't start
+
+```bash
+# Check logs
+journalctl --user -u ccdbind.service
+
+# Test config
+ccdbind --config ~/.config/ccdbind/config.toml --dry-run
+```
+
+### Games not detected
+
+```bash
+# Check if Steam env vars are set
+cat /proc/<game_pid>/environ | tr '\0' '\n' | grep -i steam
+
+# Add to allowlist if needed
+exe_allowlist = ["game-executable"]
+```
+
+### Pinning not working
+
+```bash
+# Check current CPU assignments
+systemctl --user show app.slice | grep AllowedCPUs
+
+# Verify topology detection
+ccdbind --print-topology
+```
+
+### Performance issues
+
+Reduce poll interval impact:
+
+```toml
+interval = "5s"  # Less frequent scanning
+```

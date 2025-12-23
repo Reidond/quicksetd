@@ -1,0 +1,312 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for ccdbind and ccdpin
+---
+
+# Troubleshooting
+
+## Diagnostic Commands
+
+Before troubleshooting, gather information:
+
+```bash
+# Check topology detection
+ccdbind --print-topology
+
+# Check daemon status
+ccdbind status
+systemctl --user status ccdbind.service
+
+# View recent logs
+journalctl --user -u ccdbind.service --since "10 min ago"
+
+# Check current CPU assignments
+systemctl --user show app.slice | grep AllowedCPUs
+systemctl --user show background.slice | grep AllowedCPUs
+```
+
+## Common Issues
+
+### All CPUs in One Group
+
+**Symptom**: `ccdbind --print-topology` shows all CPUs as either OS_CPUS or GAME_CPUS.
+
+**Causes**:
+1. Single-CCD CPU (e.g., Ryzen 5 5600X)
+2. L3 topology not exposed in sysfs
+3. Kernel doesn't support cache topology
+
+**Solutions**:
+
+```toml title="~/.config/ccdbind/config.toml"
+# Manually define CPU groups
+os_cpus = "0-5"
+game_cpus = "6-11"
+```
+
+### Games Not Detected
+
+**Symptom**: ccdbind shows no active games even when playing.
+
+<Steps>
+### Verify Steam environment variables
+
+```bash
+# Find game PID
+pgrep -f "YourGame"
+
+# Check for Steam variables
+cat /proc/<pid>/environ | tr '\0' '\n' | grep -iE "(steam|proton)"
+```
+
+### Check ignore list
+
+Ensure your game isn't in `ignore_exe`:
+
+```toml
+ignore_exe = [
+  "steam",
+  "steamwebhelper",
+  # Remove your game if listed here
+]
+```
+
+### Add to allowlist
+
+If the game doesn't have Steam variables:
+
+```toml
+exe_allowlist = ["your-game-executable"]
+```
+</Steps>
+
+### Pinning Not Taking Effect
+
+**Symptom**: Status shows pinning active, but `taskset -p <pid>` shows all CPUs.
+
+**Causes**:
+1. Process started before pinning
+2. systemd slice not applied
+3. Process in wrong slice
+
+**Solutions**:
+
+```bash
+# Check which slice the process is in
+systemctl --user status <pid>
+
+# Verify slice has correct CPUs
+systemctl --user show app.slice -p AllowedCPUs
+
+# Force restart the daemon
+systemctl --user restart ccdbind.service
+```
+
+### Service Won't Start
+
+**Symptom**: `systemctl --user status ccdbind.service` shows failed.
+
+<Steps>
+### Check logs
+
+```bash
+journalctl --user -u ccdbind.service -n 50
+```
+
+### Validate config
+
+```bash
+ccdbind --config ~/.config/ccdbind/config.toml --dry-run
+```
+
+### Check binary
+
+```bash
+which ccdbind
+ccdbind --help
+```
+
+### Verify systemd user session
+
+```bash
+systemctl --user status
+```
+</Steps>
+
+### Performance Not Improved
+
+**Symptom**: Game still stutters despite pinning being active.
+
+**Possible causes and solutions**:
+
+1. **Wrong CPU group assignment**
+   ```bash
+   # Try swapping groups
+   ccdpin --swap %command%
+   ```
+
+2. **Not enough cores for game**
+   ```toml
+   # Give more cores to games
+   os_cpus = "0-3"
+   game_cpus = "4-15"
+   ```
+
+3. **Other bottlenecks** (GPU, RAM, disk I/O)
+   - CPU pinning won't help non-CPU bottlenecks
+
+4. **Game uses all cores intentionally**
+   - Some games are optimized for many cores
+   - Try without pinning to compare
+
+### System Unresponsive During Gaming
+
+**Symptom**: Desktop/background apps lag while game is running.
+
+**Cause**: Too few CPUs assigned to OS tasks.
+
+**Solutions**:
+
+```toml
+# Give OS more cores
+os_cpus = "0-7"
+game_cpus = "8-15"
+
+# Don't pin session.slice
+pin_session_slice = false
+
+# Pin fewer slices
+pin_slices = ["background.slice"]
+```
+
+Or disable OS pinning in ccdpin:
+
+```
+ccdpin --no-os-pin %command%
+```
+
+### State File Corruption
+
+**Symptom**: Weird behavior, slices stuck in pinned state.
+
+**Solution**: Reset state and restart:
+
+```bash
+systemctl --user stop ccdbind.service
+rm -rf ~/.local/state/ccdbind
+rm -rf ~/.local/state/ccdpin
+systemctl --user start ccdbind.service
+```
+
+### D-Bus Errors
+
+**Symptom**: Logs show D-Bus connection errors.
+
+```
+Failed to connect to user bus: No such file or directory
+```
+
+**Cause**: systemd user session not running properly.
+
+**Solutions**:
+
+```bash
+# Check user session
+systemctl --user status
+
+# Enable lingering (allows user services without login)
+loginctl enable-linger $USER
+
+# Restart user session
+systemctl --user daemon-reexec
+```
+
+### Multiple ccdbind Instances
+
+**Symptom**: Conflicting behavior, duplicate log entries.
+
+**Check**:
+```bash
+pgrep -a ccdbind
+```
+
+**Solution**:
+```bash
+pkill ccdbind
+systemctl --user restart ccdbind.service
+```
+
+## Debug Mode
+
+Enable verbose logging:
+
+### For ccdbind
+
+Set in environment before starting:
+```bash
+STEAM_CCD_DEBUG=1 ccdbind
+```
+
+Or modify the service:
+```ini title="~/.config/systemd/user/ccdbind.service"
+[Service]
+Environment=STEAM_CCD_DEBUG=1
+ExecStart=%h/.local/bin/ccdbind
+```
+
+### For ccdpin
+
+```bash
+STEAM_CCD_DEBUG=1 ccdpin %command% 2>&1 | tee /tmp/ccdpin.log
+```
+
+## Getting Help
+
+If you can't resolve an issue:
+
+1. **Gather diagnostics**:
+   ```bash
+   ccdbind --print-topology > topology.txt
+   ccdbind status --json > status.json
+   journalctl --user -u ccdbind.service --since "1 hour ago" > logs.txt
+   ```
+
+2. **Check existing issues**: [GitHub Issues](https://github.com/youruser/quicksetd/issues)
+
+3. **Open a new issue** with:
+   - Your CPU model
+   - Kernel version (`uname -r`)
+   - Topology output
+   - Relevant logs
+   - Steps to reproduce
+
+## FAQ
+
+### Does this work with Intel CPUs?
+
+Yes, but you need manual configuration since Intel doesn't have CCDs:
+
+```toml
+os_cpus = "0-3"
+game_cpus = "4-7"
+```
+
+### Can I use this with Lutris/Heroic?
+
+Yes! Add game executables to the allowlist:
+
+```toml
+exe_allowlist = ["wine-preloader", "lutris-wrapper"]
+```
+
+### Does this work on Wayland?
+
+Yes, ccdbind and ccdpin are display-server agnostic. They only interact with systemd and the kernel.
+
+### Will this conflict with GameMode?
+
+Generally no. GameMode adjusts different parameters (governor, scheduler). They can complement each other. If you experience issues, try disabling one to isolate the cause.
+
+### What about SMT (Hyperthreading)?
+
+The tools work with SMT threads automatically. The topology detection includes both physical and SMT cores in each CCD group.

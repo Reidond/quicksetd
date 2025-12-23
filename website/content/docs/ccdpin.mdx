@@ -1,0 +1,238 @@
+---
+title: ccdpin
+description: Launch wrapper for manual CPU affinity control
+---
+
+# ccdpin
+
+`ccdpin` is a lightweight wrapper for launching games with explicit CPU affinity control. It's designed for Steam launch options.
+
+## Usage
+
+```bash
+ccdpin [flags] [--] COMMAND [args...]
+```
+
+### Steam Launch Options
+
+Add to your game's launch options in Steam:
+
+```
+ccdpin %command%
+```
+
+With environment variables:
+
+```
+PROTON_ENABLE_HDR=1 ccdpin %command%
+```
+
+## How It Works
+
+1. **Detect topology** - Same as ccdbind, reads L3 cache groups
+2. **Pin OS slices** - Temporarily pin slices to OS CPUs
+3. **Launch game** - Start game pinned to GAME CPUs
+4. **Restore** - When game exits, restore original settings
+
+### Launch Methods
+
+ccdpin tries these in order:
+
+1. **systemd-run** (preferred) - Creates a transient scope
+   ```bash
+   systemd-run --user --scope -p AllowedCPUs=8-15 game.exe
+   ```
+
+2. **taskset** (fallback) - Direct CPU affinity
+   ```bash
+   taskset -c 8-15 game.exe
+   ```
+
+## CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--print` | Print topology and exit |
+| `--swap` | Swap OS/GAME CPU groups |
+| `--no-os-pin` | Don't pin OS slices |
+| `--os-slices <list>` | Override slices to pin |
+| `--dry-run` | Print actions without executing |
+
+### Examples
+
+```bash
+# Print detected topology
+ccdpin --print
+
+# Swap CPU groups (game on CPU0's CCD)
+ccdpin --swap %command%
+
+# Don't pin OS slices
+ccdpin --no-os-pin %command%
+
+# Custom slice list
+ccdpin --os-slices "app.slice session.slice" %command%
+
+# Test without running
+ccdpin --dry-run echo test
+```
+
+## Environment Variables
+
+For compatibility with shell scripts, ccdpin supports environment variable configuration:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `STEAM_CCD_GAME_CPUS` | Game CPU list | Auto-detected |
+| `STEAM_CCD_OS_CPUS` | OS CPU list | Auto-detected |
+| `STEAM_CCD_SWAP` | Swap groups if set | - |
+| `STEAM_CCD_NO_OS_PIN` | Disable OS pinning if set | - |
+| `STEAM_CCD_OS_SLICES` | Space-separated slice list | `app.slice background.slice session.slice` |
+| `STEAM_CCD_DEBUG` | Enable debug output if set | - |
+
+### Examples
+
+```bash
+# Override CPU groups
+STEAM_CCD_GAME_CPUS="8-15" ccdpin %command%
+
+# Swap groups
+STEAM_CCD_SWAP=1 ccdpin %command%
+
+# Debug mode
+STEAM_CCD_DEBUG=1 ccdpin %command%
+```
+
+## Steam Launch Options Examples
+
+### Basic usage
+
+```
+ccdpin %command%
+```
+
+### With Proton settings
+
+```
+PROTON_ENABLE_HDR=1 DXVK_ASYNC=1 ccdpin %command%
+```
+
+### Swap CPU groups
+
+Some games perform better on CPU0's CCD:
+
+```
+ccdpin --swap %command%
+```
+
+### Game-specific CPU override
+
+For a specific game that needs more cores:
+
+```
+STEAM_CCD_GAME_CPUS="4-23" ccdpin %command%
+```
+
+### Debug issues
+
+```
+STEAM_CCD_DEBUG=1 ccdpin %command% 2>&1 | tee /tmp/ccdpin.log
+```
+
+## Using with ccdbind
+
+ccdpin and ccdbind can work together:
+
+<Callout type="info">
+  When ccdbind is running, ccdpin detects this and coordinates to avoid conflicts. The daemon handles ongoing management while ccdpin ensures proper launch-time setup.
+</Callout>
+
+### Recommended Setup
+
+1. Run `ccdbind` as a service for automatic management
+2. Use `ccdpin %command%` for launch-time guarantees
+3. Use `ccdpin --swap` for games that need it
+
+## State Management
+
+ccdpin maintains its own state for OS-slice pinning:
+
+```
+~/.local/state/ccdpin/
+├── lock          # Prevents concurrent runs
+└── refcount      # Tracks active games
+```
+
+When multiple games are launched with ccdpin:
+- First launch pins OS slices
+- Subsequent launches increment refcount
+- Last game exit restores original settings
+
+## Troubleshooting
+
+### Game doesn't launch
+
+```bash
+# Test with a simple command
+ccdpin --dry-run echo "test"
+
+# Check if systemd-run is available
+which systemd-run
+
+# Try with taskset fallback
+ccdpin --no-systemd %command%
+```
+
+### Performance not improved
+
+1. Verify topology detection:
+   ```bash
+   ccdpin --print
+   ```
+
+2. Check if game is actually pinned:
+   ```bash
+   taskset -p <game_pid>
+   ```
+
+3. Try swapping groups:
+   ```
+   ccdpin --swap %command%
+   ```
+
+### OS becomes unresponsive
+
+Reduce pinned slices:
+
+```
+STEAM_CCD_OS_SLICES="background.slice" ccdpin %command%
+```
+
+Or disable OS pinning entirely:
+
+```
+ccdpin --no-os-pin %command%
+```
+
+### Conflicts with ccdbind
+
+If both tools seem to conflict:
+
+```bash
+# Check ccdbind status
+ccdbind status
+
+# Temporarily stop daemon for testing
+systemctl --user stop ccdbind.service
+ccdpin %command%
+```
+
+## Comparison: ccdpin vs ccdbind
+
+| Feature | ccdpin | ccdbind |
+|---------|--------|---------|
+| Operation | One-shot wrapper | Background daemon |
+| Game detection | Manual (you run it) | Automatic (scans processes) |
+| Multiple games | Refcount-based | Scope-based |
+| Configuration | Env vars / flags | Config file |
+| Best for | Per-game control | Set-and-forget |

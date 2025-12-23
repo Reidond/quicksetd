@@ -1,0 +1,233 @@
+---
+title: Configuration
+description: Configure ccdbind detection rules, CPU groups, and pinning behavior
+---
+
+# Configuration
+
+ccdbind uses TOML configuration files to control its behavior.
+
+## Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `~/.config/ccdbind/config.toml` | Main configuration |
+| `~/.config/ccdbind/ignore.txt` | Executable ignore list |
+| `~/.local/state/ccdbind/state.json` | Runtime state (managed automatically) |
+
+## Full Configuration Reference
+
+```toml title="~/.config/ccdbind/config.toml"
+# Poll interval for process scanning
+interval = "2s"
+
+# Primary detection: environment variable keys
+# If any of these are present in /proc/<pid>/environ,
+# the process is treated as a game
+env_keys = ["SteamAppId", "SteamGameId", "STEAM_COMPAT_APP_ID"]
+
+# Secondary detection: executable basenames
+# Processes with these names are treated as games
+exe_allowlist = []
+
+# Executables to ignore even if they match detection rules
+ignore_exe = [
+  "steam",
+  "steamwebhelper",
+  "pressure-vessel",
+  "reaper",
+]
+
+# Path to additional ignore list file
+# ignore_file = "/home/you/.config/ccdbind/ignore.txt"
+
+# Slices to pin to OS CPUs while any game is active
+pin_slices = ["app.slice", "background.slice"]
+
+# Also pin session.slice (off by default)
+pin_session_slice = false
+
+# Manual CPU group overrides (skip auto-detection)
+# os_cpus = "0-7"
+# game_cpus = "8-15"
+```
+
+## Configuration Options
+
+### `interval`
+
+How often to scan for game processes.
+
+```toml
+interval = "2s"  # Default
+interval = "500ms"  # More responsive, higher CPU usage
+interval = "5s"  # Less responsive, lower CPU usage
+```
+
+### `env_keys`
+
+Environment variables used to detect game processes. Steam/Proton sets these automatically.
+
+```toml
+env_keys = ["SteamAppId", "SteamGameId", "STEAM_COMPAT_APP_ID"]
+```
+
+<Callout type="info">
+  Most Steam games are detected automatically via these variables. You rarely need to modify this.
+</Callout>
+
+### `exe_allowlist`
+
+Manually specify executables to treat as games. Useful for non-Steam games.
+
+```toml
+exe_allowlist = ["lutris", "heroic", "wine-preloader"]
+```
+
+### `ignore_exe`
+
+Executables to ignore even if they match detection rules. These are typically Steam helper processes.
+
+```toml
+ignore_exe = [
+  "steam",           # Steam client
+  "steamwebhelper",  # Steam browser
+  "pressure-vessel", # Steam runtime container
+  "reaper",          # Proton process manager
+]
+```
+
+### `ignore_file`
+
+Path to a file with additional executables to ignore (one per line).
+
+```toml
+ignore_file = "/home/you/.config/ccdbind/ignore.txt"
+```
+
+Example `ignore.txt`:
+```txt
+# Comments start with #
+some-launcher
+another-helper
+```
+
+### `pin_slices`
+
+Systemd slices to pin to OS CPUs when a game is running.
+
+```toml
+pin_slices = ["app.slice", "background.slice"]
+```
+
+Common slices:
+- `app.slice` - Desktop applications
+- `background.slice` - Background services
+- `session.slice` - Session services (see below)
+
+### `pin_session_slice`
+
+Whether to also pin `session.slice`. Disabled by default because it can affect system responsiveness.
+
+```toml
+pin_session_slice = false  # Default
+pin_session_slice = true   # More aggressive pinning
+```
+
+### `os_cpus` / `game_cpus`
+
+Manual CPU group overrides. Use these if:
+- Auto-detection doesn't work for your CPU
+- You want custom CPU assignments
+- Your CPU doesn't have multiple CCDs
+
+```toml
+os_cpus = "0-7"
+game_cpus = "8-15"
+```
+
+CPU list format:
+- `0-7` - Range
+- `0,2,4,6` - Individual CPUs
+- `0-3,8-11` - Mixed
+
+## Ignore List File
+
+Create `~/.config/ccdbind/ignore.txt` to ignore specific executables:
+
+```txt
+# Steam helpers (already in default config)
+steam
+steamwebhelper
+
+# Custom ignores
+my-overlay-app
+discord-overlay
+```
+
+## State Files
+
+ccdbind maintains state in `~/.local/state/ccdbind/state.json`:
+
+```json
+{
+  "os_pinned": true,
+  "original_cpus": {
+    "app.slice": "0-23",
+    "background.slice": "0-23"
+  },
+  "game_scopes": ["game-12345.scope"]
+}
+```
+
+<Callout type="warning">
+  Don't edit state files manually. They're managed by ccdbind and used to restore original settings when games exit.
+</Callout>
+
+## Environment Variable Overrides
+
+Both `ccdbind` and `ccdpin` support environment variable overrides for compatibility:
+
+| Variable | Description |
+|----------|-------------|
+| `STEAM_CCD_GAME_CPUS` | Override game CPU group |
+| `STEAM_CCD_OS_CPUS` | Override OS CPU group |
+| `STEAM_CCD_SWAP` | Swap OS/GAME groups |
+| `STEAM_CCD_NO_OS_PIN` | Disable OS slice pinning |
+| `STEAM_CCD_OS_SLICES` | Override slices to pin |
+| `STEAM_CCD_DEBUG` | Enable debug logging |
+
+## Recommended Configurations
+
+### Ryzen 9 5900X / 5950X (2 CCDs)
+
+Auto-detection should work. Default config is optimal.
+
+### Threadripper (4+ CCDs)
+
+You may want to dedicate more CCDs to games:
+
+```toml
+# Give games 3 CCDs, OS gets 1
+os_cpus = "0-15"
+game_cpus = "16-63"
+```
+
+### Intel / Single-CCD AMD
+
+Manual configuration required:
+
+```toml
+# Split cores manually (example: 8-core CPU)
+os_cpus = "0-3"
+game_cpus = "4-7"
+```
+
+### Minimal Interference Mode
+
+Only pin essential slices:
+
+```toml
+pin_slices = ["background.slice"]
+pin_session_slice = false
+```

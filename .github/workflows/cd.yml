@@ -1,0 +1,138 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Get version
+        id: version
+        run: echo "version=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          mkdir -p dist
+
+          go build -ldflags "${LDFLAGS}" -o "dist/ccdbind" ./cmd/ccdbind
+          go build -ldflags "${LDFLAGS}" -o "dist/ccdpin" ./cmd/ccdpin
+
+          ARCHIVE_NAME="ccdbind-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "${ARCHIVE_NAME}"
+          cp dist/ccdbind dist/ccdpin "${ARCHIVE_NAME}/"
+          cp config.example.toml "${ARCHIVE_NAME}/"
+          cp -r systemd "${ARCHIVE_NAME}/"
+          cp README.md LICENSE "${ARCHIVE_NAME}/"
+
+          tar -czvf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccdbind-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            *.tar.gz
+            *.sha256
+          retention-days: 7
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate release notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cat <<EOF > release-notes.md
+          ## Installation
+
+          ### Quick Install (recommended)
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/Reidond/ccdbind/main/install.sh | bash
+          \`\`\`
+
+          ### Manual Install
+
+          Download the appropriate archive for your system:
+
+          | Platform | Architecture | Download |
+          |----------|--------------|----------|
+          | Linux | x86_64 | [ccdbind-${VERSION}-linux-amd64.tar.gz](https://github.com/Reidond/ccdbind/releases/download/${VERSION}/ccdbind-${VERSION}-linux-amd64.tar.gz) |
+          | Linux | ARM64 | [ccdbind-${VERSION}-linux-arm64.tar.gz](https://github.com/Reidond/ccdbind/releases/download/${VERSION}/ccdbind-${VERSION}-linux-arm64.tar.gz) |
+
+          ### Checksums
+
+          Verify your download with the provided SHA256 checksums.
+
+          ## What's Changed
+
+          See the [full changelog](https://github.com/Reidond/ccdbind/compare/$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "main")...${VERSION}) for details.
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
